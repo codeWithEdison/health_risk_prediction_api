@@ -1,11 +1,17 @@
 # app.py
 from flask import Flask, request, jsonify
+import os
+
+# Handle dotenv import
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# Import after environment is set up
 from model.predict import predict_risk
 from model.train import train_model
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
 
 app = Flask(__name__)
 
@@ -25,7 +31,7 @@ def predict():
 @app.route('/api/train', methods=['POST'])
 def train():
     try:
-        data_path = 'data/sample_data.csv'
+        data_path = os.path.join(os.path.dirname(__file__), 'data', 'sample_data.csv')
         model, scaler = train_model(data_path)
         return jsonify({'message': 'Model trained successfully'}), 200
     except Exception as e:

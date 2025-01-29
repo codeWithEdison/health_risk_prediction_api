@@ -6,3 +6,4 @@ scikit-learn==1.6.0
 joblib==1.4.2
 gunicorn==23.0.0
 python-dotenv==1.0.1
+flask-restx

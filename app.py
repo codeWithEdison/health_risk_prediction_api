@@ -2,12 +2,12 @@ import os
 import ssl
 import pymysql
 import sqlalchemy
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_restx import Api, Resource, fields
-from sqlalchemy import desc, text  # Add text here
+from sqlalchemy import desc, text
 from dotenv import load_dotenv
-from datetime import date
+from datetime import date, datetime
 
 # Load environment variables
 load_dotenv()
@@ -20,6 +20,8 @@ from model.predict import predict_risk
 
 # Create Flask app
 app = Flask(__name__)
+
+
 
 # Database Configuration
 db_host = os.getenv('DB_HOST')
@@ -105,6 +107,7 @@ prediction_response_model = api.model('PredictionResponse', {
 })
 
 # Prediction Resource with Swagger Documentation
+# In your prediction endpoint
 @prediction_ns.route('/')
 class PatientRiskPrediction(Resource):
     @prediction_ns.expect(patient_prediction_model)
@@ -112,12 +115,6 @@ class PatientRiskPrediction(Resource):
     def post(self):
         """
         Predict health risk for a specific patient
-        
-        This endpoint:
-        - Retrieves the patient's latest medical record
-        - Calculates patient age
-        - Predicts health risk using machine learning model
-        - Returns detailed prediction and recommendations
         """
         try:
             # Get patient ID from request
@@ -165,25 +162,26 @@ class PatientRiskPrediction(Resource):
             db.session.add(new_prediction)
             db.session.commit()
             
-            # Prepare response
-            return {
+            # Prepare response with safe serialization
+            response = {
                 'patient_id': patient_id,
                 'patient_name': patient.full_name,
                 'patient_age': age,
                 'risk_prediction': risk_prediction,
                 'medical_record': {
-                    'visit_date': latest_record.visit_date,
+                    'visit_date': latest_record.visit_date.isoformat() if latest_record.visit_date else None,
                     'blood_pressure': f"{latest_record.blood_pressure_sys}/{latest_record.blood_pressure_dia}",
                     'blood_sugar': latest_record.blood_sugar,
                     'temperature': latest_record.temperature,
                     'heart_rate': latest_record.heart_rate
                 }
-            }, 200
+            }
+            
+            return response, 200
         
         except Exception as e:
             db.session.rollback()
             api.abort(500, f"An error occurred: {str(e)}")
-
 # Database Connection Test Endpoint
 @api.route('/db-test')
 class DatabaseConnectionTest(Resource):
@@ -194,29 +192,31 @@ class DatabaseConnectionTest(Resource):
         Returns connection status and additional database information
         """
         try:
-            # Test connection with multiple checks
-            connection = db.engine.connect()
-            
-            # Simple query
-            result = connection.execute(text('SELECT 1'))
-            result.fetchone()
-            
-            # Get database version (if supported)
-            version_result = connection.execute(text('SELECT VERSION()'))
-            db_version = version_result.fetchone()[0]
-            
-            # Close the connection
-            connection.close()
+            # Simple connection test using SQLAlchemy core
+            with db.engine.connect() as connection:
+                # Basic query to test connection
+                result = connection.execute(text('SELECT 1'))
+                result.fetchone()
             
             return {
                 'status': 'Database connection successful',
-                'database_version': db_version
+                'details': {
+                    'host': db_host,
+                    'port': db_port,
+                    'database': db_name
+                }
             }, 200
         except Exception as e:
             return {
                 'status': 'Database connection failed', 
-                'error': str(e)
+                'error': str(e),
+                'connection_details': {
+                    'host': db_host,
+                    'port': db_port,
+                    'database': db_name
+                }
             }, 500
+
 # Health Check Endpoint
 @api.route('/health')
 class HealthCheck(Resource):

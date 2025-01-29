@@ -8,6 +8,7 @@ from flask_restx import Api, Resource, fields
 from sqlalchemy import desc, text
 from dotenv import load_dotenv
 from datetime import date, datetime
+from flask_cors import CORS
 
 # Load environment variables
 load_dotenv()
@@ -21,7 +22,15 @@ from model.predict import predict_risk
 # Create Flask app
 app = Flask(__name__)
 
-
+# Configure CORS
+CORS(app, resources={
+    r"/*": {
+        "origins": ["http://localhost:3000", "http://localhost:5173", "https://pms.codewithedison.com/"], 
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
 
 # Database Configuration
 db_host = os.getenv('DB_HOST')
@@ -61,7 +70,7 @@ api = Api(app,
           description='API for retrieving and predicting patient health risks',
           doc='/swagger')
 
-# Define SQLAlchemy models to match the database schema
+# Define SQLAlchemy models
 class Patient(db.Model):
     __tablename__ = 'patient'
     patient_id = db.Column(db.Integer, primary_key=True)
@@ -93,7 +102,7 @@ class HealthRiskPrediction(db.Model):
 # Namespaces
 prediction_ns = api.namespace('prediction', description='Health Risk Prediction Operations')
 
-# Swagger Models for Request and Response
+# Swagger Models
 patient_prediction_model = api.model('PatientPrediction', {
     'patient_id': fields.Integer(required=True, description='Patient ID to predict risk for', example=1)
 })
@@ -106,7 +115,15 @@ prediction_response_model = api.model('PredictionResponse', {
     'medical_record': fields.Raw(description='Latest Medical Record Details')
 })
 
-# Prediction Resource with Swagger Documentation
+# Add CORS headers to all responses
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+# Prediction Resource
 @prediction_ns.route('/')
 class PatientRiskPrediction(Resource):
     @prediction_ns.expect(patient_prediction_model)
@@ -114,16 +131,8 @@ class PatientRiskPrediction(Resource):
     def post(self):
         """
         Predict health risk for a specific patient
-        
-        This endpoint:
-        - Checks for existing prediction for the medical record
-        - Retrieves the patient's latest medical record
-        - Calculates patient age
-        - Predicts health risk using machine learning model
-        - Returns detailed prediction and recommendations
         """
         try:
-            # Get patient ID from request
             patient_id = request.json.get('patient_id')
             
             # Validate patient exists
@@ -144,13 +153,12 @@ class PatientRiskPrediction(Resource):
             if not latest_record:
                 api.abort(404, f"No medical records found for patient {patient_id}")
             
-            # Check if prediction already exists for this medical record
+            # Check for existing prediction
             existing_prediction = HealthRiskPrediction.query.filter_by(
                 patient_id=patient_id, 
                 record_id=latest_record.record_id
             ).first()
             
-            # If prediction exists, return the existing prediction
             if existing_prediction:
                 return {
                     'patient_id': patient_id,
@@ -171,7 +179,7 @@ class PatientRiskPrediction(Resource):
                     }
                 }, 200
             
-            # Prepare prediction input data
+            # Prepare prediction input
             prediction_input = {
                 'Age': age,
                 'SystolicBP': latest_record.blood_pressure_sys or 0,
@@ -181,10 +189,10 @@ class PatientRiskPrediction(Resource):
                 'HeartRate': latest_record.heart_rate or 0
             }
             
-            # Make risk prediction
+            # Make prediction
             risk_prediction = predict_risk(prediction_input)
             
-            # Save prediction to database
+            # Save prediction
             new_prediction = HealthRiskPrediction(
                 patient_id=patient_id,
                 record_id=latest_record.record_id,
@@ -195,7 +203,7 @@ class PatientRiskPrediction(Resource):
             db.session.add(new_prediction)
             db.session.commit()
             
-            # Prepare response with safe serialization
+            # Prepare response
             response = {
                 'patient_id': patient_id,
                 'patient_name': patient.full_name,
@@ -215,91 +223,14 @@ class PatientRiskPrediction(Resource):
         except Exception as e:
             db.session.rollback()
             api.abort(500, f"An error occurred: {str(e)}")
-    @prediction_ns.expect(patient_prediction_model)
-    @prediction_ns.marshal_with(prediction_response_model)
-    def post(self):
-        """
-        Predict health risk for a specific patient
-        """
-        try:
-            # Get patient ID from request
-            patient_id = request.json.get('patient_id')
-            
-            # Validate patient exists
-            patient = Patient.query.get_or_404(patient_id, description="Patient not found")
-            
-            # Calculate patient age
-            today = date.today()
-            age = today.year - patient.birth_date.year - (
-                (today.month, today.day) < (patient.birth_date.month, patient.birth_date.day)
-            )
-            
-            # Find the latest medical record
-            latest_record = (MedicalRecord.query
-                             .filter_by(patient_id=patient_id)
-                             .order_by(desc(MedicalRecord.visit_date))
-                             .first())
-            
-            if not latest_record:
-                api.abort(404, f"No medical records found for patient {patient_id}")
-            
-            # Prepare prediction input data
-            prediction_input = {
-                'Age': age,
-                'SystolicBP': latest_record.blood_pressure_sys or 0,
-                'DiastolicBP': latest_record.blood_pressure_dia or 0,
-                'BS': latest_record.blood_sugar or 0,
-                'BodyTemp': latest_record.temperature or 0,
-                'HeartRate': latest_record.heart_rate or 0
-            }
-            
-            # Make risk prediction
-            risk_prediction = predict_risk(prediction_input)
-            
-            # Save prediction to database
-            new_prediction = HealthRiskPrediction(
-                patient_id=patient_id,
-                record_id=latest_record.record_id,
-                risk_level=risk_prediction['risk_level'],
-                prediction_details=str(risk_prediction['vital_signs_analysis']),
-                recommendations=str(risk_prediction['recommendations'])
-            )
-            db.session.add(new_prediction)
-            db.session.commit()
-            
-            # Prepare response with safe serialization
-            response = {
-                'patient_id': patient_id,
-                'patient_name': patient.full_name,
-                'patient_age': age,
-                'risk_prediction': risk_prediction,
-                'medical_record': {
-                    'visit_date': latest_record.visit_date.isoformat() if latest_record.visit_date else None,
-                    'blood_pressure': f"{latest_record.blood_pressure_sys}/{latest_record.blood_pressure_dia}",
-                    'blood_sugar': latest_record.blood_sugar,
-                    'temperature': latest_record.temperature,
-                    'heart_rate': latest_record.heart_rate
-                }
-            }
-            
-            return response, 200
-        
-        except Exception as e:
-            db.session.rollback()
-            api.abort(500, f"An error occurred: {str(e)}")
-# Database Connection Test Endpoint
+
+# Database Connection Test
 @api.route('/db-test')
 class DatabaseConnectionTest(Resource):
     def get(self):
-        """
-        Test database connection
-        
-        Returns connection status and additional database information
-        """
+        """Test database connection"""
         try:
-            # Simple connection test using SQLAlchemy core
             with db.engine.connect() as connection:
-                # Basic query to test connection
                 result = connection.execute(text('SELECT 1'))
                 result.fetchone()
             
@@ -322,18 +253,13 @@ class DatabaseConnectionTest(Resource):
                 }
             }, 500
 
-# Health Check Endpoint
+# Health Check
 @api.route('/health')
 class HealthCheck(Resource):
     def get(self):
-        """
-        Check API health status
-        
-        Returns a simple status to confirm the API is running
-        """
+        """Check API health status"""
         return {'status': 'healthy'}, 200
 
-# Debugging function to print connection details (optional)
 def print_connection_debug_info():
     print("Database Connection Details:")
     print(f"Host: {db_host}")
@@ -343,9 +269,6 @@ def print_connection_debug_info():
     print(f"SSL Cert Path: {db_ca_cert}")
 
 if __name__ == '__main__':
-    # Print connection debug info
     print_connection_debug_info()
-    
-    # Run the application
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)

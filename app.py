@@ -107,9 +107,114 @@ prediction_response_model = api.model('PredictionResponse', {
 })
 
 # Prediction Resource with Swagger Documentation
-# In your prediction endpoint
 @prediction_ns.route('/')
 class PatientRiskPrediction(Resource):
+    @prediction_ns.expect(patient_prediction_model)
+    @prediction_ns.marshal_with(prediction_response_model)
+    def post(self):
+        """
+        Predict health risk for a specific patient
+        
+        This endpoint:
+        - Checks for existing prediction for the medical record
+        - Retrieves the patient's latest medical record
+        - Calculates patient age
+        - Predicts health risk using machine learning model
+        - Returns detailed prediction and recommendations
+        """
+        try:
+            # Get patient ID from request
+            patient_id = request.json.get('patient_id')
+            
+            # Validate patient exists
+            patient = Patient.query.get_or_404(patient_id, description="Patient not found")
+            
+            # Calculate patient age
+            today = date.today()
+            age = today.year - patient.birth_date.year - (
+                (today.month, today.day) < (patient.birth_date.month, patient.birth_date.day)
+            )
+            
+            # Find the latest medical record
+            latest_record = (MedicalRecord.query
+                             .filter_by(patient_id=patient_id)
+                             .order_by(desc(MedicalRecord.visit_date))
+                             .first())
+            
+            if not latest_record:
+                api.abort(404, f"No medical records found for patient {patient_id}")
+            
+            # Check if prediction already exists for this medical record
+            existing_prediction = HealthRiskPrediction.query.filter_by(
+                patient_id=patient_id, 
+                record_id=latest_record.record_id
+            ).first()
+            
+            # If prediction exists, return the existing prediction
+            if existing_prediction:
+                return {
+                    'patient_id': patient_id,
+                    'patient_name': patient.full_name,
+                    'patient_age': age,
+                    'risk_prediction': {
+                        'risk_level': existing_prediction.risk_level,
+                        'prediction_details': existing_prediction.prediction_details,
+                        'recommendations': existing_prediction.recommendations,
+                        'timestamp': existing_prediction.predicted_at.isoformat()
+                    },
+                    'medical_record': {
+                        'visit_date': latest_record.visit_date.isoformat() if latest_record.visit_date else None,
+                        'blood_pressure': f"{latest_record.blood_pressure_sys}/{latest_record.blood_pressure_dia}",
+                        'blood_sugar': latest_record.blood_sugar,
+                        'temperature': latest_record.temperature,
+                        'heart_rate': latest_record.heart_rate
+                    }
+                }, 200
+            
+            # Prepare prediction input data
+            prediction_input = {
+                'Age': age,
+                'SystolicBP': latest_record.blood_pressure_sys or 0,
+                'DiastolicBP': latest_record.blood_pressure_dia or 0,
+                'BS': latest_record.blood_sugar or 0,
+                'BodyTemp': latest_record.temperature or 0,
+                'HeartRate': latest_record.heart_rate or 0
+            }
+            
+            # Make risk prediction
+            risk_prediction = predict_risk(prediction_input)
+            
+            # Save prediction to database
+            new_prediction = HealthRiskPrediction(
+                patient_id=patient_id,
+                record_id=latest_record.record_id,
+                risk_level=risk_prediction['risk_level'],
+                prediction_details=str(risk_prediction['vital_signs_analysis']),
+                recommendations=str(risk_prediction['recommendations'])
+            )
+            db.session.add(new_prediction)
+            db.session.commit()
+            
+            # Prepare response with safe serialization
+            response = {
+                'patient_id': patient_id,
+                'patient_name': patient.full_name,
+                'patient_age': age,
+                'risk_prediction': risk_prediction,
+                'medical_record': {
+                    'visit_date': latest_record.visit_date.isoformat() if latest_record.visit_date else None,
+                    'blood_pressure': f"{latest_record.blood_pressure_sys}/{latest_record.blood_pressure_dia}",
+                    'blood_sugar': latest_record.blood_sugar,
+                    'temperature': latest_record.temperature,
+                    'heart_rate': latest_record.heart_rate
+                }
+            }
+            
+            return response, 200
+        
+        except Exception as e:
+            db.session.rollback()
+            api.abort(500, f"An error occurred: {str(e)}")
     @prediction_ns.expect(patient_prediction_model)
     @prediction_ns.marshal_with(prediction_response_model)
     def post(self):

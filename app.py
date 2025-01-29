@@ -1,13 +1,19 @@
-from flask import Flask, request, jsonify
+import os
+import ssl
+import pymysql
+import sqlalchemy
+from flask import Flask, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_restx import Api, Resource, fields
-from sqlalchemy import desc
-import os
+from sqlalchemy import desc, text  # Add text here
 from dotenv import load_dotenv
-import ssl
+from datetime import date
 
 # Load environment variables
 load_dotenv()
+
+# Install pymysql as MySQLdb
+pymysql.install_as_MySQLdb()
 
 # Import prediction model
 from model.predict import predict_risk
@@ -15,31 +21,30 @@ from model.predict import predict_risk
 # Create Flask app
 app = Flask(__name__)
 
-# Database SSL Configuration
-ssl_context = ssl.create_default_context(cafile=os.getenv('DB_CA_CERT_PATH'))
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
-
-# Construct SQLAlchemy connection string with SSL
+# Database Configuration
 db_host = os.getenv('DB_HOST')
 db_port = os.getenv('DB_PORT')
 db_user = os.getenv('DB_USER')
 db_pass = os.getenv('DB_PASS')
-db_name = 'patient_management'  # Assuming this is your database name
+db_name = os.getenv('DB_NAME', 'patient_management')
+db_ca_cert = os.getenv('DB_CA_CERT_PATH')
 
-# SQLAlchemy connection URL with SSL parameters
+# Construct connection string
 connection_string = (
     f"mysql+pymysql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
-    f"?ssl_ca={os.getenv('DB_CA_CERT_PATH')}"
+    f"?ssl_ca={db_ca_cert}"
+    f"&ssl_verify_cert=false"
 )
 
-# Configure SQLAlchemy
+# App configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = connection_string
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'connect_args': {
         'ssl': {
-            'ca': os.getenv('DB_CA_CERT_PATH')
+            'ca': db_ca_cert,
+            'check_hostname': False,
+            'verify_mode': ssl.CERT_NONE
         }
     }
 }
@@ -47,7 +52,7 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 # Initialize SQLAlchemy
 db = SQLAlchemy(app)
 
-# Create Flask-RESTX API
+# Create Flask-RESTX API with Swagger documentation
 api = Api(app, 
           version='1.0', 
           title='Patient Risk Prediction API',
@@ -86,35 +91,42 @@ class HealthRiskPrediction(db.Model):
 # Namespaces
 prediction_ns = api.namespace('prediction', description='Health Risk Prediction Operations')
 
-# Request and Response Models
+# Swagger Models for Request and Response
 patient_prediction_model = api.model('PatientPrediction', {
-    'patient_id': fields.Integer(required=True, description='Patient ID', example=1)
+    'patient_id': fields.Integer(required=True, description='Patient ID to predict risk for', example=1)
 })
 
 prediction_response_model = api.model('PredictionResponse', {
     'patient_id': fields.Integer(description='Patient ID'),
     'patient_name': fields.String(description='Patient Full Name'),
-    'patient_age': fields.Integer(description='Patient Age'),
-    'risk_prediction': fields.Raw(description='Risk Prediction Details'),
+    'patient_age': fields.Integer(description='Calculated Patient Age'),
+    'risk_prediction': fields.Raw(description='Detailed Risk Prediction'),
     'medical_record': fields.Raw(description='Latest Medical Record Details')
 })
 
-# Prediction Resource
+# Prediction Resource with Swagger Documentation
 @prediction_ns.route('/')
 class PatientRiskPrediction(Resource):
     @prediction_ns.expect(patient_prediction_model)
     @prediction_ns.marshal_with(prediction_response_model)
     def post(self):
-        """Predict health risk for a patient based on their latest medical record"""
+        """
+        Predict health risk for a specific patient
+        
+        This endpoint:
+        - Retrieves the patient's latest medical record
+        - Calculates patient age
+        - Predicts health risk using machine learning model
+        - Returns detailed prediction and recommendations
+        """
         try:
             # Get patient ID from request
-            patient_id = api.payload.get('patient_id')
+            patient_id = request.json.get('patient_id')
             
             # Validate patient exists
             patient = Patient.query.get_or_404(patient_id, description="Patient not found")
             
             # Calculate patient age
-            from datetime import date
             today = date.today()
             age = today.year - patient.birth_date.year - (
                 (today.month, today.day) < (patient.birth_date.month, patient.birth_date.day)
@@ -172,19 +184,62 @@ class PatientRiskPrediction(Resource):
             db.session.rollback()
             api.abort(500, f"An error occurred: {str(e)}")
 
+# Database Connection Test Endpoint
+@api.route('/db-test')
+class DatabaseConnectionTest(Resource):
+    def get(self):
+        """
+        Test database connection
+        
+        Returns connection status and additional database information
+        """
+        try:
+            # Test connection with multiple checks
+            connection = db.engine.connect()
+            
+            # Simple query
+            result = connection.execute(text('SELECT 1'))
+            result.fetchone()
+            
+            # Get database version (if supported)
+            version_result = connection.execute(text('SELECT VERSION()'))
+            db_version = version_result.fetchone()[0]
+            
+            # Close the connection
+            connection.close()
+            
+            return {
+                'status': 'Database connection successful',
+                'database_version': db_version
+            }, 200
+        except Exception as e:
+            return {
+                'status': 'Database connection failed', 
+                'error': str(e)
+            }, 500
 # Health Check Endpoint
 @api.route('/health')
 class HealthCheck(Resource):
     def get(self):
-        """Check API health status"""
+        """
+        Check API health status
+        
+        Returns a simple status to confirm the API is running
+        """
         return {'status': 'healthy'}, 200
 
+# Debugging function to print connection details (optional)
+def print_connection_debug_info():
+    print("Database Connection Details:")
+    print(f"Host: {db_host}")
+    print(f"Port: {db_port}")
+    print(f"User: {db_user}")
+    print(f"Database: {db_name}")
+    print(f"SSL Cert Path: {db_ca_cert}")
+
 if __name__ == '__main__':
-    # Create tables if they don't exist (be careful with this in production)
-    with app.app_context():
-        # Uncomment the next line if you want to create tables automatically
-        # db.create_all()
-        pass
+    # Print connection debug info
+    print_connection_debug_info()
     
     # Run the application
     port = int(os.getenv('PORT', 5000))

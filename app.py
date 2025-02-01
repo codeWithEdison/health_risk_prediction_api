@@ -23,14 +23,15 @@ from model.predict import predict_risk
 app = Flask(__name__)
 
 # Configure CORS
-CORS(app, resources={
-    r"/*": {
-        "origins": ["http://localhost:3000", "http://localhost:5173", "https://pms.codewithedison.com/"], 
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True
-    }
-})
+# CORS(app, resources={
+#     r"/*": {
+#         "origins": ["http://localhost:3000", "http://localhost:5173", "https://pms.codewithedison.com/"], 
+#         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+#         "allow_headers": ["Content-Type", "Authorization"],
+#         "supports_credentials": True
+#     }
+# })
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Database Configuration
 db_host = os.getenv('DB_HOST')
